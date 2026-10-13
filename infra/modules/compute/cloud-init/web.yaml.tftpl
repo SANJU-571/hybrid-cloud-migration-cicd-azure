@@ -1,0 +1,69 @@
+#cloud-config
+# Customer-portal microservice (web tier, VM Scale Set instance)
+package_update: true
+packages:
+  - nginx
+  - jq
+
+write_files:
+  - path: /etc/nginx/sites-available/default
+    defer: true # written after the nginx package is installed
+    content: |
+      server {
+        listen 80 default_server;
+        root /var/www/html;
+        index index.html;
+
+        # Health endpoint used by the Application Health extension,
+        # Application Gateway / Load Balancer probes and rolling upgrades.
+        location = /health {
+          access_log off;
+          default_type application/json;
+          return 200 '{"status":"healthy"}';
+        }
+
+        # East-west call to the private fraud-detection tier (app subnet).
+        location /api/fraud/ {
+          proxy_pass http://${fraud_detection_ip}:8080/;
+          proxy_connect_timeout 3s;
+        }
+      }
+
+  - path: /usr/local/bin/render-portal.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      META=$(curl -s -H Metadata:true "http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01")
+      NAME=$(echo "$META" | jq -r .name)
+      ZONE=$(echo "$META" | jq -r '.zone // "n/a"')
+      REGION=$(echo "$META" | jq -r .location)
+      cat > /var/www/html/index.html <<HTML
+      <!doctype html>
+      <html lang="en"><head><meta charset="utf-8"><title>N-Financial Bank</title>
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      <style>
+        body{font-family:Segoe UI,Arial,sans-serif;background:#0b1f3a;color:#fff;margin:0;display:grid;place-items:center;min-height:100vh}
+        .card{background:#12305a;padding:32px 40px;border-radius:14px;max-width:560px}
+        h1{margin:0 0 4px}small{color:#9fb6d9}
+        table{margin-top:18px;border-collapse:collapse;width:100%}
+        td{padding:6px 0;border-bottom:1px solid #22477d}td:first-child{color:#9fb6d9;width:45%}
+        a{color:#7cc4ff}
+      </style></head>
+      <body><div class="card">
+        <h1>N-Financial Bank</h1><small>Customer Portal &middot; Azure hybrid cloud</small>
+        <table>
+          <tr><td>Served by instance</td><td>$NAME</td></tr>
+          <tr><td>Availability zone</td><td>$ZONE</td></tr>
+          <tr><td>Region</td><td>$REGION</td></tr>
+          <tr><td>Tier</td><td>Web (VM Scale Set, autoscaled)</td></tr>
+        </table>
+        <p>Refresh to watch the load balancer move you between instances.<br>
+        Private tier check: <a href="/api/fraud/check">/api/fraud/check</a></p>
+      </div></body></html>
+      HTML
+
+runcmd:
+  - /usr/local/bin/render-portal.sh
+  - systemctl enable nginx
+  - systemctl restart nginx

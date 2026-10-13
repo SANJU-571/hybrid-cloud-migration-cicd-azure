@@ -51,7 +51,8 @@ provider "azurerm" {
     recovery_service {
       # Backup soft delete is always on in Azure; purge protected items so
       # `terraform destroy` can remove the vault in a lab.
-      purge_protected_items_from_vault_on_destroy = true
+      purge_protected_items_from_vault_on_destroy          = true
+      vm_backup_stop_protection_and_retain_data_on_destroy = false
     }
     resource_group {
       prevent_deletion_if_contains_resources = false

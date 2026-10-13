@@ -168,7 +168,6 @@ Checkov runs on every push. Each check I skipped is listed with a reason in [`.c
 
 ## Credits
 
-Capstone team (design and Cisco Packet Tracer on-prem lab): Bhargav Kiran Surapaneni, Sai Akhil Perumalla, Sai Pragna Ramoji, Devesh Chowdary Chalasani.
-Azure implementation, IaC and CI/CD: **Bhargav Kiran Surapaneni**.
+Design, Azure implementation, IaC and CI/CD: **Bhargav Kiran Surapaneni**.
 
 Licensed under the [MIT License](LICENSE).

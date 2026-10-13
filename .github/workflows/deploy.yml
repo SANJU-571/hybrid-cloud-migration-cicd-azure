@@ -1,0 +1,106 @@
+name: Deploy
+
+# Manually triggered plan / apply / destroy against Azure.
+# Authentication uses GitHub OIDC -> Entra ID workload identity federation:
+# no client secrets are stored in GitHub.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Terraform action"
+        required: true
+        default: plan
+        type: choice
+        options: [plan, apply, destroy]
+      profile:
+        description: "Environment profile (infra/environments/<profile>.tfvars)"
+        required: true
+        default: lab
+        type: choice
+        options: [lab, lowcost, full]
+      run_validation:
+        description: "After apply, run the network-segmentation tests"
+        required: false
+        default: true
+        type: boolean
+
+permissions:
+  id-token: write # OIDC token for Azure login
+  contents: read
+
+concurrency:
+  group: deploy-${{ inputs.profile }}
+  cancel-in-progress: false
+
+env:
+  TF_VERSION: 1.9.8
+  ARM_USE_OIDC: "true"
+  ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+  ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+  ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+  TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+  TF_IN_AUTOMATION: "true"
+  PROFILE: ${{ inputs.profile }} # choice input, used via env (no inline expression injection)
+  TFSTATE_RG: ${{ vars.TFSTATE_RESOURCE_GROUP }}
+  TFSTATE_SA: ${{ vars.TFSTATE_STORAGE_ACCOUNT }}
+
+jobs:
+  terraform:
+    name: ${{ inputs.action }} (${{ inputs.profile }})
+    runs-on: ubuntu-latest
+    # apply/destroy require approval via the "production" environment protection rule
+    environment: ${{ inputs.action == 'plan' && 'plan' || 'production' }}
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: terraform init
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=$TFSTATE_RG" \
+            -backend-config="storage_account_name=$TFSTATE_SA" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=nfb-$PROFILE.tfstate" \
+            -backend-config="use_oidc=true" \
+            -backend-config="use_azuread_auth=true"
+
+      - name: terraform plan
+        if: inputs.action != 'destroy'
+        run: terraform plan -input=false -var-file="environments/$PROFILE.tfvars" -out=tfplan
+
+      - name: terraform apply
+        if: inputs.action == 'apply'
+        run: terraform apply -input=false -auto-approve tfplan
+
+      - name: terraform destroy
+        if: inputs.action == 'destroy'
+        run: terraform destroy -input=false -auto-approve -var-file="environments/$PROFILE.tfvars"
+
+      - name: Outputs
+        if: inputs.action == 'apply'
+        run: |
+          {
+            echo "### Deployment outputs"
+            echo '```'
+            terraform output
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Network segmentation tests
+        if: inputs.action == 'apply' && inputs.run_validation
+        working-directory: .
+        run: ./scripts/validate-deployment.sh "nfb-$PROFILE"

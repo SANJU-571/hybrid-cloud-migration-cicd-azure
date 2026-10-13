@@ -1,0 +1,43 @@
+# Checkov policy-as-code configuration.
+# Every skipped check is a documented, deliberate trade-off for a
+# cost-controlled lab. See docs/SECURITY.md for the production remediation.
+framework:
+  - terraform
+  - github_actions
+directory:
+  - infra
+  - .github/workflows
+compact: true
+quiet: true
+skip-check:
+  # NSG associations are made via azurerm_subnet_network_security_group_association
+  # (for_each); Checkov's graph cannot follow the map. GatewaySubnet must NOT have an NSG.
+  - CKV2_AZURE_31
+  # Key Vault data plane stays reachable for GitHub-hosted runners (no fixed IPs);
+  # access is still Entra ID + RBAC only. Prod: private endpoint + self-hosted runner.
+  - CKV_AZURE_189
+  - CKV_AZURE_109
+  - CKV2_AZURE_32
+  # CMK expiry is governed by the key rotation_policy (expire_after = P1Y).
+  - CKV_AZURE_40
+  # HTTP listener only: no public TLS certificate/custom domain in the lab.
+  # Prod: HTTPS listener with Key Vault-stored certificate. Front Door enforces HTTPS when enabled.
+  - CKV_AZURE_217
+  - CKV_AZURE_218
+  # Encryption at host requires a per-subscription feature registration; disks
+  # are still encrypted at rest with platform-managed keys.
+  - CKV_AZURE_97
+  # VM agent extensions are required for Azure Backup snapshots, Run Command
+  # validation tests and the Application Health extension.
+  - CKV_AZURE_50
+  # Basic SQL tier (cost): no zone redundancy / ledger. Defender for SQL
+  # (enable_defender_for_cloud) provides vulnerability assessment.
+  - CKV_AZURE_224
+  - CKV_AZURE_229
+  - CKV2_AZURE_2
+  # Queue service is unused; blob logging is enabled via diagnostic settings.
+  - CKV_AZURE_33
+  - CKV2_AZURE_21
+  # SLSA build-provenance rule; this is a deployment workflow whose only
+  # inputs are fixed choice lists (action/profile), passed via env.
+  - CKV_GHA_7

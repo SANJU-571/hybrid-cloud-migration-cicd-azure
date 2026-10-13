@@ -1,0 +1,96 @@
+name: CI
+
+# Runs on every push and pull request - no Azure credentials required.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  TF_VERSION: 1.9.8
+
+jobs:
+  terraform:
+    name: Terraform fmt & validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: terraform fmt
+        run: terraform fmt -check -recursive -diff
+
+      - name: terraform init (no backend)
+        run: terraform init -backend=false -input=false
+
+      - name: terraform validate
+        # Diagnostics are re-emitted as GitHub annotations so they show inline
+        # on the commit / pull request (and on the public run summary).
+        run: |
+          terraform validate -json > validate.json || true
+          python3 - <<'PY'
+          import json, sys
+          d = json.load(open("validate.json"))
+          for diag in d.get("diagnostics", []):
+              level = "error" if diag["severity"] == "error" else "warning"
+              rng = diag.get("range") or {}
+              loc = f" file=infra/{rng['filename']},line={rng['start']['line']}" if rng else ""
+              msg = (diag["summary"] + ": " + diag.get("detail", "")).replace("\n", " ")
+              print(f"::{level}{loc}::{msg}")
+          print(f"valid={d['valid']} errors={d['error_count']} warnings={d['warning_count']}")
+          sys.exit(0 if d["valid"] else 1)
+          PY
+
+  tflint:
+    name: TFLint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: terraform-linters/setup-tflint@v4
+        with:
+          tflint_version: v0.53.0
+
+      - name: tflint --init
+        run: tflint --init --config "$GITHUB_WORKSPACE/.tflint.hcl"
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: tflint
+        working-directory: infra
+        run: tflint --recursive --config "$GITHUB_WORKSPACE/.tflint.hcl" --format compact
+
+  checkov:
+    name: Checkov security scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Checkov
+        run: pip install checkov==3.3.29
+
+      - name: Run Checkov
+        run: checkov --config-file .checkov.yaml
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint scripts
+        run: shellcheck scripts/*.sh

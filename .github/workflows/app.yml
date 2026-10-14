@@ -71,7 +71,7 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Trivy - block on fixable CRITICAL vulnerabilities
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (pinned by SHA)
         with:
           image-ref: fraud-detection:ci
           severity: CRITICAL
@@ -80,7 +80,7 @@ jobs:
           format: table
 
       - name: Trivy - full report (SARIF)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 (pinned by SHA)
         with:
           image-ref: fraud-detection:ci
           severity: CRITICAL,HIGH,MEDIUM
@@ -151,19 +151,28 @@ jobs:
         working-directory: observability
         run: |
           docker compose up -d --build --wait
+          promql() { curl -fsG localhost:9090/api/v1/query --data-urlencode "query=$1"; }
+          v=""
           for _ in $(seq 1 30); do
-            v=$(curl -fs 'localhost:9090/api/v1/query?query=slo:sli_error:ratio_rate5m' | jq -r '.data.result[0].value[1] // empty')
+            v=$(promql 'slo:sli_error:ratio_rate5m' | jq -r '.data.result[0].value[1] // empty' || true)
             [ -n "$v" ] && break; sleep 5
           done
           echo "SLI error ratio (5m) = ${v:?recording rule produced no data}"
-          curl -fs 'localhost:9090/api/v1/query?query=up{job="fraud-detection"}' | jq -e '.data.result[0].value[1] == "1"'
+          promql 'up{job="fraud-detection"}' | jq -e '.data.result[0].value[1] == "1"'
+          for _ in $(seq 1 12); do curl -fs localhost:3000/api/health >/dev/null && break; sleep 5; done
           curl -fs localhost:3000/api/health | jq -e '.database == "ok"'
-          curl -fs 'localhost:3000/api/dashboards/uid/fraud-api-slo' | jq -e '.dashboard.title == "Fraud API - SLOs"'
+          curl -fs localhost:3000/api/dashboards/uid/fraud-api-slo | jq -e '.dashboard.title == "Fraud API - SLOs"'
 
-      - name: Compose logs
+      - name: Compose diagnostics
         if: failure()
         working-directory: observability
-        run: docker compose logs --tail=50
+        run: |
+          docker compose ps -a
+          # Surface the tail of each service log as annotations (visible without log access).
+          for svc in fraud-api loadgen prometheus grafana; do
+            docker compose logs --no-color --tail=5 "$svc" 2>&1 | tr '\n' ' ' | cut -c1-900 | sed "s/^/::warning title=$svc::/"
+            echo
+          done
 
   kind:
     name: Deploy to kind + smoke tests
@@ -233,6 +242,10 @@ jobs:
           kubectl -n fraud describe pods || true
           kubectl -n fraud logs -l app.kubernetes.io/name=fraud-detection --tail=100 || true
           kubectl get events -A --sort-by=.lastTimestamp | tail -50 || true
+          # Short summaries as annotations (visible without downloading logs).
+          echo "::warning title=pods::$(kubectl -n fraud get pods -o wide --no-headers 2>&1 | tr '\n' ';' | cut -c1-900)"
+          echo "::warning title=events::$(kubectl -n fraud get events --sort-by=.lastTimestamp --no-headers 2>&1 | tail -8 | tr '\n' ';' | cut -c1-900)"
+          echo "::warning title=prober::$(kubectl -n fraud logs prober 2>&1 | tail -3 | tr '\n' ';')"
 
   publish:
     name: Publish image & chart to GHCR

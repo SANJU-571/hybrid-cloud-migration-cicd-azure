@@ -14,6 +14,7 @@ locals {
     project     = "n-financial-bank-hybrid-cloud"
     environment = var.environment
     managed_by  = "terraform"
+    cost_center = var.cost_center
     repo        = "hybrid-cloud-migration-cicd-azure"
   }, var.tags)
 
@@ -24,6 +25,7 @@ locals {
     web              = "192.168.202.0/24" # Public tier: customer portal VM Scale Set
     data             = "192.168.203.0/24" # Private tier: Azure SQL / Storage private endpoints
     app              = "192.168.204.0/24" # Private tier: fraud-detection service
+    aks              = "192.168.205.0/24" # AKS nodes + internal load balancers (used when enable_aks)
   }
 
   onprem_subnets = {
@@ -42,6 +44,13 @@ resource "azurerm_resource_group" "azure" {
   name     = "rg-${local.name}-azure"
   location = var.location
   tags     = local.tags
+
+  lifecycle {
+    precondition {
+      condition     = !var.enable_governance || contains(var.allowed_locations, var.location)
+      error_message = "var.location must be one of var.allowed_locations, or the data-residency policy will deny every resource."
+    }
+  }
 }
 
 resource "azurerm_resource_group" "onprem" {
@@ -203,4 +212,42 @@ module "edge" {
   resource_group_name = azurerm_resource_group.azure.name
   origin_host         = module.compute.public_fqdn
   tags                = local.tags
+}
+
+module "aks" {
+  source = "./modules/aks"
+  count  = var.enable_aks ? 1 : 0
+
+  name                            = local.name
+  location                        = var.location
+  resource_group_name             = azurerm_resource_group.azure.name
+  tenant_id                       = data.azurerm_client_config.current.tenant_id
+  subnet_id                       = module.network.subnet_ids["aks"]
+  availability_zones              = var.availability_zones
+  kubernetes_version              = var.aks_kubernetes_version
+  node_vm_size                    = var.aks_node_vm_size
+  node_max_count                  = var.aks_node_max_count
+  log_analytics_workspace_id      = module.monitoring.log_analytics_workspace_id
+  admin_object_ids                = distinct(concat([data.azurerm_client_config.current.object_id], var.aks_admin_object_ids))
+  api_server_authorized_ip_ranges = var.aks_api_authorized_ip_ranges
+  tags                            = local.tags
+
+  # The NAT Gateway must be on snet-aks before the cluster is created
+  # (outbound_type = userAssignedNATGateway).
+  depends_on = [module.network]
+}
+
+module "governance" {
+  source = "./modules/governance"
+  count  = var.enable_governance ? 1 : 0
+
+  name = local.name
+  resource_group_ids = {
+    azure  = azurerm_resource_group.azure.id
+    onprem = azurerm_resource_group.onprem.id
+  }
+  allowed_locations     = var.allowed_locations
+  required_tags         = ["environment", "cost_center", "managed_by"]
+  tag_policy_effect     = var.tag_policy_effect
+  network_policy_effect = "Deny"
 }

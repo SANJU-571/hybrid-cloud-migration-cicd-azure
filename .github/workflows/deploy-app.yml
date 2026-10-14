@@ -1,0 +1,87 @@
+name: Deploy app (AKS)
+
+# Manually deploys the fraud-detection Helm chart to the AKS cluster created
+# with enable_aks = true. Same OIDC identity and approval gate as "Deploy".
+# Rollout is atomic: if pods do not become ready, Helm rolls back.
+on:
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Environment profile the cluster belongs to"
+        required: true
+        default: lab
+        type: choice
+        options: [lab, lowcost, full]
+      image_tag:
+        description: "Image tag in ghcr.io/sanju-571/fraud-detection (a commit SHA from the App workflow, or latest)"
+        required: true
+        default: latest
+        type: string
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-app-${{ inputs.profile }}
+  cancel-in-progress: false
+
+env:
+  PROFILE: ${{ inputs.profile }}
+  IMAGE_TAG: ${{ inputs.image_tag }}
+  CHART_DIR: deploy/helm/fraud-detection
+  NAMESPACE: fraud
+
+jobs:
+  deploy:
+    name: helm upgrade (${{ inputs.profile }})
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate image tag
+        run: |
+          [[ "$IMAGE_TAG" =~ ^(latest|[0-9a-f]{7,40}|[0-9]+\.[0-9]+\.[0-9]+)$ ]] \
+            || { echo "::error::image_tag must be 'latest', a commit SHA or a semver"; exit 1; }
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - uses: azure/use-kubelogin@v1
+        with:
+          kubelogin-version: v0.1.4
+
+      - name: Get AKS credentials (Entra ID)
+        run: |
+          az aks get-credentials -g "rg-nfb-$PROFILE-azure" -n "aks-nfb-$PROFILE" --overwrite-existing
+          kubelogin convert-kubeconfig -l azurecli
+          kubectl get nodes -o wide
+
+      - name: helm upgrade --install (atomic)
+        run: |
+          helm upgrade --install fraud-detection "$CHART_DIR" -n "$NAMESPACE" --create-namespace \
+            -f "$CHART_DIR/values-aks.yaml" --set image.tag="$IMAGE_TAG" \
+            --atomic --wait --timeout 6m
+          kubectl -n "$NAMESPACE" get deploy,po,svc,hpa,pdb -o wide
+
+      - name: helm test
+        run: helm test fraud-detection -n "$NAMESPACE" --logs
+
+      - name: Summary
+        run: |
+          ip=$(kubectl -n "$NAMESPACE" get svc fraud-detection -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+          {
+            echo "### fraud-detection deployed to aks-nfb-$PROFILE"
+            echo "- Image tag: \`$IMAGE_TAG\`"
+            echo "- Internal load balancer IP (snet-aks): \`${ip:-pending}\`"
+            echo "- Reachable from snet-web and the Manager VLAN only (NetworkPolicy + NSG)"
+          } >> "$GITHUB_STEP_SUMMARY"

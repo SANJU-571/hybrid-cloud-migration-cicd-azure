@@ -50,3 +50,13 @@ output "backup_vault" {
   description = "Recovery Services vault protecting the fraud-detection VM."
   value       = module.backup.vault_name
 }
+
+output "aks_cluster_name" {
+  description = "AKS cluster (when enable_aks)."
+  value       = var.enable_aks ? module.aks[0].cluster_name : null
+}
+
+output "aks_get_credentials" {
+  description = "Command to fetch kubeconfig (Entra ID auth; run kubelogin convert-kubeconfig -l azurecli afterwards)."
+  value       = var.enable_aks ? "az aks get-credentials -g ${azurerm_resource_group.azure.name} -n ${module.aks[0].cluster_name}" : null
+}

@@ -41,3 +41,18 @@ skip-check:
   # SLSA build-provenance rule; this is a deployment workflow whose only
   # inputs are fixed choice lists (action/profile), passed via env.
   - CKV_GHA_7
+  # --- AKS (modules/aks, enable_aks) - cost-controlled lab trade-offs ---
+  # Public API endpoint so GitHub-hosted runners can deploy; access still needs
+  # Entra ID + Azure RBAC (local accounts disabled). Prod: private cluster +
+  # self-hosted runner, or authorized IP ranges (aks_api_authorized_ip_ranges).
+  - CKV_AZURE_115
+  # Free control-plane tier (no uptime SLA). Prod: sku_tier = "Standard".
+  - CKV_AZURE_170
+  # Single system pool also runs the app (one B2s node). Prod: separate user pool.
+  - CKV_AZURE_232
+  # Standard_B2s has too little cache for ephemeral OS disks.
+  - CKV_AZURE_226
+  # Platform-managed disk encryption; CMK disk encryption set + encryption at
+  # host need extra cost / per-subscription feature registration (as CKV_AZURE_97).
+  - CKV_AZURE_117
+  - CKV_AZURE_227

@@ -44,7 +44,7 @@ resource "azurerm_subnet" "this" {
 }
 
 ############################################
-# NAT Gateway - deterministic outbound internet for patching (web + app tiers)
+# NAT Gateway - deterministic outbound internet for patching (web, app and AKS subnets)
 ############################################
 resource "azurerm_public_ip" "nat" {
   name                = "pip-${var.name}-nat"
@@ -70,7 +70,8 @@ resource "azurerm_nat_gateway_public_ip_association" "this" {
 }
 
 resource "azurerm_subnet_nat_gateway_association" "this" {
-  for_each       = toset(["web", "app"])
+  # snet-aks egresses through the same NAT Gateway (AKS outbound_type = userAssignedNATGateway).
+  for_each       = toset([for k in ["web", "app", "aks"] : k if contains(keys(var.subnets), k)])
   subnet_id      = azurerm_subnet.this[each.key].id
   nat_gateway_id = azurerm_nat_gateway.this.id
 }

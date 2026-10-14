@@ -1,0 +1,10 @@
+// Error-budget burn rate per hour (1.0 = spending exactly the budget;
+// 14.4 = the fast-burn paging threshold used in docs/SRE.md).
+let budget = 0.005;
+AzureDiagnostics
+| where TimeGenerated > ago(3d)
+| where Category == "ApplicationGatewayAccessLog" and requestUri_s !startswith "/health"
+| summarize total = count(), failed = countif(httpStatus_d >= 500) by bin(TimeGenerated, 1h)
+| extend burn_rate = round((todouble(failed) / total) / budget, 2)
+| order by TimeGenerated asc
+| render timechart with (ycolumns = burn_rate)

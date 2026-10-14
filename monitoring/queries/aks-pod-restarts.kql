@@ -1,0 +1,8 @@
+// AKS (enable_aks): pods that restarted in the last 24h - first stop when the
+// fraud API error budget burns (see docs/runbooks/fraud-api-errors.md).
+KubePodInventory
+| where TimeGenerated > ago(24h)
+| where Namespace == "fraud"
+| summarize restarts = max(ContainerRestartCount), arg_max(TimeGenerated, PodStatus) by Name
+| where restarts > 0
+| order by restarts desc

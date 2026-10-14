@@ -1,0 +1,7 @@
+apiVersion: 1
+providers:
+  - name: nfb
+    folder: N-Financial Bank
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

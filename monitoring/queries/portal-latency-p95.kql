@@ -1,0 +1,6 @@
+// p50 / p95 / p99 latency of the customer portal (timeTaken_d is in seconds).
+AzureDiagnostics
+| where TimeGenerated > ago(24h)
+| where Category == "ApplicationGatewayAccessLog" and requestUri_s !startswith "/health"
+| summarize percentiles(timeTaken_d, 50, 95, 99) by bin(TimeGenerated, 15m)
+| render timechart

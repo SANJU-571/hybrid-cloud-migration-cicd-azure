@@ -1,0 +1,6 @@
+// FinOps: which tables drive Log Analytics ingestion (the workspace has a
+// 1 GB/day cap; this shows what fills it).
+Usage
+| where TimeGenerated > ago(30d) and IsBillable == true
+| summarize ingested_gb = round(sum(Quantity) / 1024, 3) by DataType
+| order by ingested_gb desc

@@ -1,0 +1,6 @@
+// What the WAF blocked, by rule and client IP (security triage).
+AzureDiagnostics
+| where TimeGenerated > ago(7d)
+| where Category == "ApplicationGatewayFirewallLog" and action_s == "Blocked"
+| summarize hits = count(), sample_uri = any(requestUri_s) by ruleId_s, Message, clientIp_s
+| order by hits desc

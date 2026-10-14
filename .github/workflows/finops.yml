@@ -1,0 +1,82 @@
+name: FinOps
+
+# Cost report for a deployed environment: month-to-date spend, forecast vs
+# budget, cost by service and by cost_center tag, and waste checks.
+#  - push / PR: unit tests for the report logic (no Azure access needed)
+#  - manual run or weekly schedule: real report via OIDC (read-only use)
+#    Enable the schedule by setting the repository variable FINOPS_SCHEDULE=true.
+on:
+  push:
+    branches: [main]
+    paths: ["finops/**", ".github/workflows/finops.yml"]
+  pull_request:
+    paths: ["finops/**", ".github/workflows/finops.yml"]
+  schedule:
+    - cron: "0 13 * * 1" # Mondays 09:00 Toronto (EDT)
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: "Environment profile"
+        required: true
+        default: lab
+        type: choice
+        options: [lab, lowcost, full]
+      budget:
+        description: "Monthly budget in USD (monthly_budget_usd)"
+        required: true
+        default: "150"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest==8.3.4 && python -m pytest -q finops/tests
+
+  report:
+    name: Cost report (${{ inputs.profile || 'lab' }})
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && vars.FINOPS_SCHEDULE == 'true')
+    runs-on: ubuntu-latest
+    environment: plan
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      PROFILE: ${{ inputs.profile || 'lab' }}
+      BUDGET: ${{ inputs.budget || '150' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Azure login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build report
+        run: |
+          [[ "$BUDGET" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "::error::budget must be a number"; exit 1; }
+          rc=0
+          python3 finops/cost_report.py --prefix "nfb-$PROFILE" --budget "$BUDGET" \
+            --markdown report.md --csv daily-cost.csv --fail-on-forecast-over-budget || rc=$?
+          [[ -f report.md ]] && cat report.md >> "$GITHUB_STEP_SUMMARY"
+          exit "$rc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: finops-${{ env.PROFILE }}
+          path: |
+            report.md
+            daily-cost.csv
+          if-no-files-found: ignore

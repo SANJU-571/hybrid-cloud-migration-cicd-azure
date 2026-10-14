@@ -246,6 +246,8 @@ jobs:
           echo "::warning title=pods::$(kubectl -n fraud get pods -o wide --no-headers 2>&1 | tr '\n' ';' | cut -c1-900)"
           echo "::warning title=events::$(kubectl -n fraud get events --sort-by=.lastTimestamp --no-headers 2>&1 | tail -8 | tr '\n' ';' | cut -c1-900)"
           echo "::warning title=prober::$(kubectl -n fraud logs prober 2>&1 | tail -3 | tr '\n' ';')"
+          echo "::warning title=helm-test::$(kubectl -n fraud logs fraud-detection-test 2>&1 | tail -6 | tr '\n' ';' | cut -c1-900)"
+          echo "::warning title=netpol::$(kubectl -n fraud get networkpolicy fraud-detection -o jsonpath='{.spec}' 2>&1 | cut -c1-900)"
 
   publish:
     name: Publish image & chart to GHCR

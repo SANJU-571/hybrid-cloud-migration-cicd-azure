@@ -90,7 +90,8 @@ export TF_VAR_alert_email="you@example.com"     # alerts + budget emails
 # Register the resource providers this project uses (one-time, ~2 min)
 for ns in Microsoft.Network Microsoft.Compute Microsoft.KeyVault Microsoft.Sql \
           Microsoft.Storage Microsoft.RecoveryServices Microsoft.Insights \
-          Microsoft.OperationalInsights Microsoft.Cdn Microsoft.Security Microsoft.Consumption; do
+          Microsoft.OperationalInsights Microsoft.Cdn Microsoft.Security Microsoft.Consumption \
+          Microsoft.ContainerService Microsoft.PolicyInsights Microsoft.CostManagement; do
   az provider register --namespace "$ns" --wait
 done
 ```
@@ -181,7 +182,7 @@ Claude Code prompt:
 
 This script:
 - creates an Entra ID app with **federated credentials** for your repo (no client secret exists anywhere),
-- grants it `Contributor` and `Role Based Access Control Administrator` on the subscription, plus blob access to the state account,
+- grants it `Contributor`, `Role Based Access Control Administrator` and `Resource Policy Contributor` (for the Azure Policy guardrails) on the subscription, plus blob access to the state account,
 - stores the IDs as GitHub secrets and variables,
 - creates a `production` environment that requires **your approval**.
 
@@ -220,6 +221,57 @@ Talking points for interviews:
 
 ---
 
+## Phase 10: Kubernetes, governance, SRE and FinOps
+
+### Container pipeline (free, runs on every push)
+
+The **App** workflow tests the fraud-detection API, builds the image, scans it with Trivy, lints the Helm chart, scans the rendered manifests with Checkov, deploys to a throwaway **kind** cluster, runs `helm test`, and checks that a rolling update loses zero requests. On `main` it publishes the image and chart to GitHub Container Registry.
+
+After the first publish, make the package public once so AKS can pull it without a secret: GitHub → your profile → **Packages** → `fraud-detection` → *Package settings* → *Change visibility* → Public.
+
+### AKS (optional, ~US$1.5–3/day extra)
+
+```bash
+# infra/environments/lab.tfvars: enable_aks = true
+make plan apply PROFILE=lab
+az aks get-credentials -g rg-nfb-lab-azure -n aks-nfb-lab && kubelogin convert-kubeconfig -l azurecli
+kubectl get nodes
+```
+
+Then **Actions → Deploy app (AKS)** → profile `lab`, image tag = a commit SHA from the App workflow (or `latest`). The rollout is atomic: Helm rolls back if pods don't become ready. To use your own account with kubectl, add your object ID (`az ad signed-in-user show --query id -o tsv`) to `aks_admin_object_ids`.
+
+### Governance (free, on by default)
+
+`enable_governance = true` creates the custom policy definitions in `infra/modules/governance/policies/` and assigns them to the project's resource groups. Check compliance (results take ~30 min after the first apply):
+
+```bash
+az policy state summarize -g rg-nfb-lab-azure --query "policyAssignments[].{policy:policyAssignmentId, nonCompliant:results.nonCompliantResources}" -o table
+```
+
+Expect a few **Audit** findings (for example, NICs that Azure creates for private endpoints carry no tags). That's the point: it shows the governance reporting working. Network rules are **Deny**, so a public IP on a VM NIC is blocked at deploy time.
+
+### SRE
+
+- Local lab: `cd observability && docker compose up -d --build`, then follow [SRE.md](SRE.md#practise-it-locally-free).
+- Game day on a deployed environment (writes probe logs you can attach to a postmortem):
+
+```bash
+./scripts/game-day.sh nfb-lab web-instance 180   # one web instance powered off
+./scripts/game-day.sh nfb-lab fraud-vm 120        # private dependency down
+```
+
+- KQL for SLOs, burn rate, latency, WAF and log costs: `monitoring/queries/` (paste into Log Analytics).
+
+### FinOps
+
+```bash
+python3 finops/cost_report.py --prefix nfb-lab --budget 150 --markdown report.md
+```
+
+Or **Actions → FinOps → Run workflow**. The report lands in the run summary. Set the repository variable `FINOPS_SCHEDULE=true` to get it every Monday. Cost Management data lags by up to 24 hours.
+
+---
+
 ## Working on the project with Claude Code
 
 The repo includes a [`CLAUDE.md`](../CLAUDE.md) that tells Claude Code how the project is laid out and which checks to run. Useful prompts:
@@ -247,4 +299,8 @@ Claude Code asks before running commands. Review each `terraform apply` it propo
 | Key Vault `403` right after creation | RBAC propagation is slow; run `make plan apply` again (the code already waits 90 s) |
 | Portal returns 502 for the first few minutes | cloud-init is still installing nginx; wait about 5 minutes |
 | `validate` fails on ACL tests in `vpn` mode | wait until both VPN connections show **Connected** |
+| `RequestDisallowedByPolicy` | a guardrail blocked something: read the non-compliance message; check `location` is in `allowed_locations` |
+| `AuthorizationFailed` on `policyDefinitions/write` | re-run `setup-github-oidc.sh` (adds Resource Policy Contributor), or set `enable_governance = false` |
+| AKS pods `ImagePullBackOff` | make the GHCR package public (Phase 10) or check the image tag exists |
+| `kubectl` asks for a device-code login / is forbidden | run `kubelogin convert-kubeconfig -l azurecli`; add your object ID to `aks_admin_object_ids` |
 | Destroy fails on the Recovery Services vault | Portal → vault → *Backup items* → stop backup and delete data, then destroy again |

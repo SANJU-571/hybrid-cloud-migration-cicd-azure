@@ -19,6 +19,10 @@
 | Subscription Activity Log exported; email alert on any NSG rule change | `modules/monitoring` |
 | Optional: DDoS Network Protection, Defender for Cloud (VMs, SQL, Storage, Key Vault) | flags in `variables.tf` |
 | Policy as code: Checkov, TFLint, ShellCheck on every push; manual approval for apply/destroy | `.github/workflows/ci.yml` |
+| Azure Policy guardrails: custom definitions (required tags, no public IP on NICs, no public SQL/Storage endpoints) + Canada-only Allowed locations (PIPEDA data residency) | `modules/governance` |
+| Container image: distroless, non-root (UID 65532), no shell; Trivy blocks fixable CRITICAL CVEs; SBOM + build provenance attached on publish | `app/fraud-detection/Dockerfile`, `.github/workflows/app.yml` |
+| Kubernetes workload hardening: read-only root FS, all capabilities dropped, seccomp RuntimeDefault, no service-account token, default-deny NetworkPolicy; Checkov scans the rendered manifests | `deploy/helm/fraud-detection`, `.checkov-app.yaml` |
+| AKS: Entra ID auth + Azure RBAC, local accounts disabled, Gatekeeper policy denies privileged containers, kube-audit logs to Log Analytics, Key Vault CSI driver with rotation, automatic patch upgrades | `modules/aks` |
 
 ## Accepted risks in the lab profile
 
@@ -32,6 +36,11 @@ Each one is a skipped Checkov check (see `.checkov.yaml`). The table gives the p
 | Basic SQL tier: no zone redundancy or ledger | Cost (~US$5/month) | Business Critical / zone-redundant; ledger tables for transaction tamper-evidence |
 | SQL vulnerability assessment via storage not configured | Defender for SQL covers it when enabled | `enable_defender_for_cloud = true` |
 | VM extensions allowed | Needed for Backup, Run Command tests, health probes | Allow-list extensions with Azure Policy |
+| AKS API server has a public endpoint (CKV_AZURE_115) | GitHub-hosted runners must reach it to deploy; Entra ID + Azure RBAC still required | Private cluster + self-hosted runner, or `aks_api_authorized_ip_ranges` |
+| AKS Free tier, no uptime SLA (CKV_AZURE_170) | Cost | `sku_tier = "Standard"` |
+| App pods run on the system node pool (CKV_AZURE_232) | One small node keeps the lab cheap | Separate user node pool with `only_critical_addons_enabled = true` on the system pool |
+| No ephemeral OS disks / CMK disk encryption set / encryption at host on AKS nodes (CKV_AZURE_226, 117, 227) | B2s cache is too small; DES and host encryption add cost and a feature registration | Larger SKU with ephemeral disks; disk encryption set with the existing Key Vault CMK; register EncryptionAtHost |
+| Kubernetes images pinned by tag, not digest (CKV_K8S_43) | CI tags every image with its immutable commit SHA | Pin digests and verify signatures (Notation/Ratify) at admission |
 
 ## Compliance mapping (indicative)
 
@@ -42,5 +51,7 @@ Each one is a skipped Checkov check (see `.checkov.yaml`). The table gives the p
 | 4 – Encrypt transmission | IPsec tunnel, TLS 1.2 minimum on data services |
 | 7/8 – Restrict and authenticate access | Entra ID, RBAC, managed identities, SSH keys only |
 | 10 – Log and monitor | Activity Log, Key Vault/SQL/WAF/Blob logs to Log Analytics, alerts |
+| 2 – Secure configurations | Azure Policy guardrails and Gatekeeper constraints enforced at deploy time |
+| 6 – Secure software | Trivy image scan, SBOM, Checkov on Kubernetes manifests, pinned dependencies |
 | 11 – Test security regularly | Checkov on each change; segmentation tests in `validate-deployment.sh` |
 | 12.10 – Incident response readiness | Backups with retention, alerting to the ops action group |

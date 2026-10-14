@@ -1,0 +1,14 @@
+// Customer-portal availability SLI and 30-day error budget (SLO 99.5%).
+// Source: Application Gateway access logs (AzureDiagnostics), lab profile.
+// Run in Log Analytics: law-nfb-<profile>
+let slo = 0.995;
+let window = 30d;
+AzureDiagnostics
+| where TimeGenerated > ago(window)
+| where Category == "ApplicationGatewayAccessLog"
+| where requestUri_s !startswith "/health"           // exclude probe traffic
+| summarize total = count(), failed = countif(httpStatus_d >= 500)
+| extend availability = 1.0 - todouble(failed) / total
+| extend budget_requests = (1.0 - slo) * total
+| extend budget_remaining_pct = round(100.0 * (budget_requests - failed) / budget_requests, 1)
+| project total, failed, availability = round(100 * availability, 3), slo_pct = 100 * slo, budget_remaining_pct

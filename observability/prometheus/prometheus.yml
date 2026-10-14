@@ -1,0 +1,15 @@
+# Local Prometheus for the fraud-detection API (docker compose).
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+rule_files:
+  - rules.yml
+
+scrape_configs:
+  - job_name: fraud-detection
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["fraud-api:8080"]
+        labels:
+          service: fraud-detection

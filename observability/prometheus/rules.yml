@@ -1,0 +1,81 @@
+# SLO recording rules and multi-window, multi-burn-rate alerts
+# (Google SRE Workbook, ch. 5). SLOs are defined in docs/SRE.md:
+#   Availability: 99.5% of scoring requests succeed (non-5xx) over 30 days
+#                 -> error budget = 0.5%
+#   Latency:      95% of scoring requests complete in < 300 ms
+groups:
+  - name: fraud-detection-sli
+    rules:
+      - record: slo:sli_error:ratio_rate5m
+        expr: |
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check",code=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check"}[5m]))
+      - record: slo:sli_error:ratio_rate30m
+        expr: |
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check",code=~"5.."}[30m]))
+          /
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check"}[30m]))
+      - record: slo:sli_error:ratio_rate1h
+        expr: |
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check",code=~"5.."}[1h]))
+          /
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check"}[1h]))
+      - record: slo:sli_error:ratio_rate6h
+        expr: |
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check",code=~"5.."}[6h]))
+          /
+          sum(rate(http_requests_total{job="fraud-detection",route=~"/v1/score|/check"}[6h]))
+      - record: slo:latency_p95:seconds_5m
+        expr: |
+          histogram_quantile(0.95,
+            sum by (le) (rate(http_request_duration_seconds_bucket{job="fraud-detection",route=~"/v1/score|/check"}[5m])))
+
+  - name: fraud-detection-slo-alerts
+    rules:
+      # Fast burn: 2% of the 30-day budget gone in 1 hour (14.4x burn rate). Page.
+      - alert: FraudApiErrorBudgetFastBurn
+        expr: |
+          slo:sli_error:ratio_rate1h > (14.4 * 0.005)
+          and
+          slo:sli_error:ratio_rate5m > (14.4 * 0.005)
+        for: 2m
+        labels:
+          severity: page
+          slo: fraud-api-availability
+        annotations:
+          summary: Fraud API is burning its error budget 14x too fast
+          runbook_url: https://github.com/SANJU-571/hybrid-cloud-migration-cicd-azure/blob/main/docs/runbooks/fraud-api-errors.md
+
+      # Slow burn: 5% of the budget gone in 6 hours (6x burn rate). Ticket.
+      - alert: FraudApiErrorBudgetSlowBurn
+        expr: |
+          slo:sli_error:ratio_rate6h > (6 * 0.005)
+          and
+          slo:sli_error:ratio_rate30m > (6 * 0.005)
+        for: 15m
+        labels:
+          severity: ticket
+          slo: fraud-api-availability
+        annotations:
+          summary: Fraud API error budget is draining steadily
+          runbook_url: https://github.com/SANJU-571/hybrid-cloud-migration-cicd-azure/blob/main/docs/runbooks/fraud-api-errors.md
+
+      - alert: FraudApiLatencySLOBreach
+        expr: slo:latency_p95:seconds_5m > 0.3
+        for: 10m
+        labels:
+          severity: ticket
+          slo: fraud-api-latency
+        annotations:
+          summary: Fraud API p95 latency above 300 ms for 10 minutes
+          runbook_url: https://github.com/SANJU-571/hybrid-cloud-migration-cicd-azure/blob/main/docs/runbooks/fraud-api-errors.md
+
+      - alert: FraudApiDown
+        expr: up{job="fraud-detection"} == 0
+        for: 1m
+        labels:
+          severity: page
+        annotations:
+          summary: Prometheus cannot scrape the fraud-detection API
+          runbook_url: https://github.com/SANJU-571/hybrid-cloud-migration-cicd-azure/blob/main/docs/runbooks/fraud-api-errors.md

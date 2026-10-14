@@ -5,10 +5,10 @@ VARFILE  = -var-file=environments/$(PROFILE).tfvars
 
 export ARM_SUBSCRIPTION_ID ?= $(shell az account show --query id -o tsv 2>/dev/null)
 
-.PHONY: help bootstrap init plan apply destroy validate fmt lint scan check
+.PHONY: help bootstrap init plan apply destroy validate fmt lint scan check app-test app-lab app-lab-down cost-report game-day
 
 help: ## Show targets
-	@grep -E '^[a-z]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z-]+:.*##' $(MAKEFILE_LIST) | awk -F':.*## ' '{printf "  %-13s %s\n", $$1, $$2}'
 
 bootstrap: ## Create the remote-state storage account (once)
 	./scripts/bootstrap-tfstate.sh
@@ -39,3 +39,18 @@ scan: ## Checkov security scan
 
 check: fmt lint scan ## All local quality gates
 	$(TF) init -backend=false -input=false >/dev/null && $(TF) validate
+
+app-test: ## Unit tests for the fraud API and the FinOps report
+	python3 -m pytest -q app/fraud-detection/tests finops/tests
+
+app-lab: ## Local API + Prometheus + Grafana (http://localhost:3000)
+	cd observability && docker compose up -d --build
+
+app-lab-down: ## Stop the local observability lab
+	cd observability && docker compose down -v
+
+cost-report: ## FinOps report for PROFILE (needs az login)
+	python3 finops/cost_report.py --prefix nfb-$(PROFILE) --budget $(or $(BUDGET),150)
+
+game-day: ## Fault-injection game day: make game-day EXPERIMENT=web-instance|fraud-vm
+	./scripts/game-day.sh nfb-$(PROFILE) $(or $(EXPERIMENT),web-instance)

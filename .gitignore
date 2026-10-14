@@ -22,3 +22,11 @@ infra/backend.hcl
 .DS_Store
 .vscode/
 .idea/
+
+# App / tooling
+__pycache__/
+.pytest_cache/
+rendered/
+game-day-*.log
+finops/report.md
+daily-cost.csv

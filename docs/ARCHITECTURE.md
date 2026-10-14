@@ -10,11 +10,12 @@ N-Financial Bank must modernise its legacy on-premises estate **gradually**: cor
 |---|---|---|
 | Edge | — | Front Door *(opt.)* → Application Gateway WAF_v2 (or Standard LB) |
 | Presentation | Core banking server | VM Scale Set: customer portal (nginx), zones 1–3 |
-| Application | — | Fraud-detection API (private VM, :8080) |
+| Application | — | Fraud-detection API (private VM, :8080); optionally also on AKS behind an internal load balancer |
 | Data | On-prem DB server | Azure SQL Database + Blob Storage via private endpoints |
 | Users | Manager VLAN 30, Employee VLAN 40 | — |
 | Connectivity | VPN device | VPN Gateway (IPsec S2S) *or* VNet peering |
 | Platform | — | Key Vault, Log Analytics, Azure Monitor, Recovery Services vault, NAT Gateway |
+| Governance | — | Azure Policy: required tags, no public IPs on NICs, no public SQL/Storage, Canada-only regions; Gatekeeper rules on AKS |
 
 ## Address plan
 
@@ -28,6 +29,7 @@ The IP plan copies the Cisco Packet Tracer lab, so the original ACL slide still 
 | snet-web | 192.168.202.0/24 | Customer-portal VM Scale Set |
 | snet-data | 192.168.203.0/24 | Private endpoints: SQL, Blob |
 | snet-app | 192.168.204.0/24 | Fraud-detection VM (192.168.204.10) |
+| snet-aks | 192.168.205.0/24 | AKS nodes + internal load balancer (only used when `enable_aks = true`; egress via the NAT Gateway). Pods use an overlay CIDR (10.244.0.0/16) and services 10.0.0.0/16, so they never collide with the bank's 192.168.x.x plan |
 | **On-prem VNet** | 192.168.0.0/17 | |
 | snet-managers | 192.168.30.0/24 | VLAN 30 (Manager PC 192.168.30.10) |
 | snet-employees | 192.168.40.0/24 | VLAN 40 (Employee PC 192.168.40.10) |
@@ -54,7 +56,8 @@ The IP plan copies the Cisco Packet Tracer lab, so the original ACL slide still 
 2. **East-west:** VMSS → `192.168.204.10:8080` fraud-detection API (NSG-restricted).
 3. **Manager → cloud DB:** 192.168.30.10 → VPN tunnel (or peering) → resolves `sql-….database.windows.net` via the linked private DNS zone → 192.168.203.x private endpoint → allowed by ACL 110.
 4. **Employee → cloud DB:** blocked twice, by the outbound NSG on the employee subnet and the inbound NSG on the data subnet.
-5. **Egress:** web and app tiers reach the internet only through the NAT Gateway (fixed IP, no implicit outbound access). The data and on-prem subnets have no egress.
+5. **Egress:** web, app and AKS subnets reach the internet only through the NAT Gateway (fixed IP, no implicit outbound access). The data and on-prem subnets have no egress.
+6. **Containerised fraud API (optional):** VMSS or Manager VLAN → internal load balancer IP in snet-aks → fraud-detection pods. `externalTrafficPolicy: Local` keeps the client IP, so the Kubernetes NetworkPolicy can allow only 192.168.202.0/24 (web) and 192.168.30.0/24 (managers), mirroring the app-subnet NSG.
 
 ## High availability and DR
 
@@ -72,6 +75,6 @@ The IP plan copies the Cisco Packet Tracer lab, so the original ACL slide still 
 
 | Strategy | How to do it here |
 |---|---|
-| Rolling update | built in: change the image or cloud-init, `terraform apply`, and the VMSS rolls in 50 % batches gated by health |
+| Rolling update | built in: change the image or cloud-init, `terraform apply`, and the VMSS rolls in 50 % batches gated by health. On AKS, `helm upgrade --atomic` rolls pods with `maxUnavailable: 0` and rolls back automatically if they do not become ready (CI proves zero failed requests during a rollout) |
 | Blue-green | deploy a second profile (e.g. `environment = "green"`), smoke-test it, then switch Front Door's origin or the DNS |
 | Green (cloud-only new feature) | new services land only in Azure; on-prem stays as the safety net, reachable over the tunnel |

@@ -54,6 +54,8 @@ assign() {
 assign "Contributor" "/subscriptions/$SUB_ID"
 # Needed because Terraform creates role assignments (Key Vault, storage CMK)
 assign "Role Based Access Control Administrator" "/subscriptions/$SUB_ID"
+# Needed for the governance module (custom Azure Policy definitions/assignments)
+assign "Resource Policy Contributor" "/subscriptions/$SUB_ID"
 assign "Storage Blob Data Contributor" \
   "$(az storage account show -n "$TFSTATE_SA" -g "$TFSTATE_RG" --query id -o tsv)"
 

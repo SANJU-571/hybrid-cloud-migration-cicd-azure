@@ -8,6 +8,7 @@ enable_app_gateway_waf    = true
 enable_front_door         = true
 enable_ddos_protection    = true
 enable_defender_for_cloud = true
+enable_aks                = true
 deploy_onprem_test_vms    = true
 web_instance_min          = 2
 web_instance_max          = 6

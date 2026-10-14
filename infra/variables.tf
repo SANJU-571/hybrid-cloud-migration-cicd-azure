@@ -30,6 +30,18 @@ variable "availability_zones" {
   default     = ["1", "2", "3"]
 }
 
+variable "cost_center" {
+  description = "Cost-allocation tag applied to every resource (FinOps reporting, required by policy)."
+  type        = string
+  default     = "nfb-cloud-lab"
+}
+
+variable "allowed_locations" {
+  description = "Regions the governance policy allows (Canadian data residency). Must include var.location."
+  type        = list(string)
+  default     = ["canadacentral", "canadaeast"]
+}
+
 variable "tags" {
   description = "Extra tags merged onto every resource."
   type        = map(string)
@@ -76,6 +88,29 @@ variable "enable_defender_for_cloud" {
   description = "Turn on Microsoft Defender for Cloud plans (VMs, SQL, Storage, Key Vault) for the whole subscription."
   type        = bool
   default     = false
+}
+
+variable "enable_aks" {
+  description = "Deploy AKS (Free tier control plane + 1-2 Standard_B2s nodes, ~US$1.5-3/day) and run the fraud-detection API on it via Helm."
+  type        = bool
+  default     = false
+}
+
+variable "enable_governance" {
+  description = "Create the Azure Policy guardrails (free). Needs Resource Policy Contributor for the deploying identity."
+  type        = bool
+  default     = true
+}
+
+variable "tag_policy_effect" {
+  description = "Effect of the required-tags policy: Audit (report only) or Deny (block untagged resources)."
+  type        = string
+  default     = "Audit"
+
+  validation {
+    condition     = contains(["Audit", "Deny", "Disabled"], var.tag_policy_effect)
+    error_message = "tag_policy_effect must be Audit, Deny or Disabled."
+  }
 }
 
 variable "deploy_onprem_test_vms" {
@@ -165,4 +200,37 @@ variable "onprem_vnet_cidr" {
   description = "Address space of the simulated on-premises network."
   type        = string
   default     = "192.168.0.0/17"
+}
+
+############################################
+# AKS (only used when enable_aks = true)
+############################################
+variable "aks_kubernetes_version" {
+  description = "AKS Kubernetes version; null = current AKS default (patches are applied automatically)."
+  type        = string
+  default     = null
+}
+
+variable "aks_node_vm_size" {
+  description = "AKS node size."
+  type        = string
+  default     = "Standard_B2s"
+}
+
+variable "aks_node_max_count" {
+  description = "Cluster autoscaler maximum node count."
+  type        = number
+  default     = 2
+}
+
+variable "aks_admin_object_ids" {
+  description = "Extra Entra ID object IDs (e.g. your user) granted AKS RBAC Cluster Admin. The deploying identity is always included."
+  type        = list(string)
+  default     = []
+}
+
+variable "aks_api_authorized_ip_ranges" {
+  description = "Optional CIDRs allowed to reach the AKS API server. Empty = any source (Entra ID auth still required)."
+  type        = list(string)
+  default     = []
 }

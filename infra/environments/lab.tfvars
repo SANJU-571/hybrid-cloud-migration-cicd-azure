@@ -6,6 +6,7 @@ connectivity_mode      = "peering" # switch to "vpn" to demo the IPsec tunnel (+
 enable_app_gateway_waf = true
 enable_front_door      = false
 enable_ddos_protection = false
+enable_aks             = false # true: AKS + Helm deploy of the fraud API (+~US$1.5-3/day)
 deploy_onprem_test_vms = true
 web_instance_min       = 2
 web_instance_max       = 4

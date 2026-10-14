@@ -1,0 +1,12 @@
+apiVersion: v2
+name: fraud-detection
+description: N-Financial Bank fraud-detection API (private application tier)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.30.0-0" # preStop sleep action
+home: https://github.com/SANJU-571/hybrid-cloud-migration-cicd-azure
+sources:
+  - https://github.com/SANJU-571/hybrid-cloud-migration-cicd-azure/tree/main/app/fraud-detection
+maintainers:
+  - name: Bhargav Kiran Surapaneni

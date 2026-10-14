@@ -1,0 +1,16 @@
+# Checkov for the application layer: the Dockerfile and the Kubernetes
+# manifests rendered from the Helm chart (default + AKS values).
+# Run by the "App" workflow after `helm template` writes rendered/*.yaml.
+# Deliberate skips are documented in docs/SECURITY.md.
+framework:
+  - kubernetes
+  - dockerfile
+directory:
+  - rendered
+  - app/fraud-detection
+compact: true
+quiet: true
+skip-check:
+  # Images are pinned by immutable commit-SHA tags pushed by CI; digest pinning
+  # would need a chart change on every build. Prod: Ratify/Notation signature check.
+  - CKV_K8S_43

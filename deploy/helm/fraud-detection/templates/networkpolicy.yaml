@@ -1,0 +1,42 @@
+{{- if .Values.networkPolicy.enabled }}
+# Default-deny for the API pods; only labelled client pods, approved CIDRs and
+# the monitoring namespaces get in. Egress is limited to DNS (the API calls
+# nothing else today).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "fraud-detection.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "fraud-detection.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "fraud-detection.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- toYaml .Values.networkPolicy.clientPodLabel | nindent 14 }}
+        {{- range .Values.networkPolicy.allowedCIDRs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+        {{- range .Values.networkPolicy.metricsNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+      ports:
+        - port: http
+          protocol: TCP
+  egress:
+    - ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+{{- end }}

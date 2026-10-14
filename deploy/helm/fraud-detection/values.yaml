@@ -1,0 +1,88 @@
+# Default values: safe for any cluster (kind in CI, AKS via values-aks.yaml).
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/sanju-571/fraud-detection
+  # Defaults to the chart appVersion when empty.
+  tag: ""
+  # Always: tags are immutable commit SHAs, so this only re-validates the digest.
+  pullPolicy: Always
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  privileged: false
+  capabilities:
+    drop: ["ALL"]
+
+service:
+  type: ClusterIP
+  port: 8080
+  annotations: {}
+  # "Local" preserves the client source IP (needed for CIDR-based NetworkPolicy
+  # rules behind an Azure internal load balancer).
+  externalTrafficPolicy: ""
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 250m
+    memory: 128Mi
+
+# Fault injection for game days / SLO alert testing (see docs/SRE.md).
+faults:
+  errorRate: "0"
+  latencyMs: "0"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Spread replicas across zones/nodes so one failure does not take the API down.
+topologySpread:
+  enabled: true
+
+networkPolicy:
+  enabled: true
+  # Pods carrying this label (in the release namespace) may call the API.
+  clientPodLabel:
+    fraud-detection-client: "true"
+  # Extra source CIDRs allowed in (e.g. the web subnet behind an internal LB).
+  allowedCIDRs: []
+  # Namespaces allowed to scrape /metrics (matched on kubernetes.io/metadata.name).
+  metricsNamespaces: []
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

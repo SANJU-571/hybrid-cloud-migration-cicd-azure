@@ -1,0 +1,21 @@
+# AKS overrides: expose the API on a private IP inside the VNet through an
+# Azure internal Standard Load Balancer, reachable only from the web tier and
+# the Manager VLAN (same intent as the app-subnet NSG).
+service:
+  type: LoadBalancer
+  externalTrafficPolicy: Local
+  annotations:
+    service.beta.kubernetes.io/azure-load-balancer-internal: "true"
+    service.beta.kubernetes.io/azure-load-balancer-internal-subnet: "snet-aks"
+
+networkPolicy:
+  enabled: true
+  allowedCIDRs:
+    - 192.168.202.0/24 # snet-web (customer portal)
+    - 192.168.30.0/24  # Manager VLAN 30 (on-prem)
+  metricsNamespaces:
+    - kube-system # Azure Monitor agent (ama-metrics)
+
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 4

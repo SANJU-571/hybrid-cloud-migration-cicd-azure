@@ -1,0 +1,55 @@
+# `helm test` scores a transaction from inside the cluster. The pod carries the
+# client label (and NOT the API's selector labels), so it also proves the
+# NetworkPolicy admits approved callers.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ include "fraud-detection.fullname" . }}-test"
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: {{ include "fraud-detection.name" . }}-test
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+    {{- toYaml .Values.networkPolicy.clientPodLabel | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    checkov.io/skip1: CKV_K8S_8=One-shot helm test pod; no long-running process to probe
+    checkov.io/skip2: CKV_K8S_9=One-shot helm test pod; no long-running process to probe
+    checkov.io/skip3: CKV2_K8S_6=Short-lived client pod; it is the caller the API NetworkPolicy admits
+spec:
+  restartPolicy: Never
+  automountServiceAccountToken: false
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: score
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: ["ALL"]
+      command: ["python3", "-c"]
+      args:
+        - |
+          import json, urllib.request
+          req = urllib.request.Request(
+              "http://{{ include "fraud-detection.fullname" . }}:{{ .Values.service.port }}/v1/score",
+              data=json.dumps({"amount": 12000, "country": "US", "card_present": False}).encode(),
+              headers={"Content-Type": "application/json"})
+          body = json.load(urllib.request.urlopen(req, timeout=5))
+          print(body)
+          assert body["decision"] == "review", body
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi

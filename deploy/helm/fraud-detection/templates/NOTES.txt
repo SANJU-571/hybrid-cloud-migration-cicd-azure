@@ -1,0 +1,8 @@
+Fraud-detection API {{ .Values.image.tag | default .Chart.AppVersion }} deployed as {{ include "fraud-detection.fullname" . }}.
+
+Try it:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "fraud-detection.fullname" . }} 8080:{{ .Values.service.port }}
+  curl -s -X POST localhost:8080/v1/score -d '{"amount": 12000, "country": "US", "card_present": false}'
+
+Run the in-cluster connectivity test:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}

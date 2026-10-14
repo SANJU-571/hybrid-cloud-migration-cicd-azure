@@ -1,0 +1,290 @@
+name: App
+
+# Container + Kubernetes pipeline for the fraud-detection API.
+# Every push / PR: unit tests -> image build -> Trivy scan -> Helm lint and
+# Checkov scan of the rendered manifests -> deploy to a throwaway kind cluster
+# and run smoke + helm tests. Pushes to main also publish the image (with SBOM
+# and provenance) and the Helm chart to GitHub Container Registry.
+# Everything runs on GitHub-hosted runners: no cloud account, no cost.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "deploy/helm/**"
+      - "observability/**"
+      - ".github/workflows/app.yml"
+  pull_request:
+    paths:
+      - "app/**"
+      - "deploy/helm/**"
+      - "observability/**"
+      - ".github/workflows/app.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  APP_DIR: app/fraud-detection
+  CHART_DIR: deploy/helm/fraud-detection
+  IMAGE: ghcr.io/sanju-571/fraud-detection
+  CHART_REPO: oci://ghcr.io/sanju-571/charts
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r "$APP_DIR/requirements.txt" -r "$APP_DIR/requirements-dev.txt"
+
+      - name: pytest
+        run: python -m pytest -q "$APP_DIR/tests"
+
+  image:
+    name: Build & scan image
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # Trivy SARIF -> Security tab
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.APP_DIR }}
+          load: true
+          tags: fraud-detection:ci
+          build-args: APP_VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Trivy - block on fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: fraud-detection:ci
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+      - name: Trivy - full report (SARIF)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: fraud-detection:ci
+          severity: CRITICAL,HIGH,MEDIUM
+          format: sarif
+          output: trivy.sarif
+          skip-setup-trivy: true
+
+      - name: Upload Trivy results to the Security tab
+        if: always() && github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-image
+
+      - name: Save image for the kind job
+        run: docker save fraud-detection:ci -o image.tar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: image
+          path: image.tar
+          retention-days: 1
+
+  helm:
+    name: Helm lint & manifest scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: helm lint (default and AKS values)
+        run: |
+          helm lint "$CHART_DIR" --strict
+          helm lint "$CHART_DIR" --strict -f "$CHART_DIR/values-aks.yaml"
+
+      - name: Render manifests
+        run: |
+          mkdir -p rendered
+          helm template fraud-detection "$CHART_DIR" -n fraud > rendered/default.yaml
+          helm template fraud-detection "$CHART_DIR" -n fraud -f "$CHART_DIR/values-aks.yaml" > rendered/aks.yaml
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Checkov - Kubernetes manifests and Dockerfile
+        run: |
+          pip install checkov==3.3.29
+          checkov --config-file .checkov-app.yaml
+
+  observability:
+    name: Prometheus rules (promtool)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check config, rules and alert unit tests
+        run: |
+          docker run --rm -v "$PWD/observability/prometheus:/p:ro" --entrypoint /bin/promtool \
+            prom/prometheus:v2.55.1 check config /p/prometheus.yml
+          docker run --rm -v "$PWD/observability/prometheus:/p:ro" --entrypoint /bin/promtool \
+            prom/prometheus:v2.55.1 test rules /p/tests.yml
+
+      - name: End-to-end - compose stack scrapes the API and evaluates the SLO rules
+        working-directory: observability
+        run: |
+          docker compose up -d --build --wait
+          for _ in $(seq 1 30); do
+            v=$(curl -fs 'localhost:9090/api/v1/query?query=slo:sli_error:ratio_rate5m' | jq -r '.data.result[0].value[1] // empty')
+            [ -n "$v" ] && break; sleep 5
+          done
+          echo "SLI error ratio (5m) = ${v:?recording rule produced no data}"
+          curl -fs 'localhost:9090/api/v1/query?query=up{job="fraud-detection"}' | jq -e '.data.result[0].value[1] == "1"'
+          curl -fs localhost:3000/api/health | jq -e '.database == "ok"'
+          curl -fs 'localhost:3000/api/dashboards/uid/fraud-api-slo' | jq -e '.dashboard.title == "Fraud API - SLOs"'
+
+      - name: Compose logs
+        if: failure()
+        working-directory: observability
+        run: docker compose logs --tail=50
+
+  kind:
+    name: Deploy to kind + smoke tests
+    needs: [image, helm]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: image
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: ci
+
+      - name: Load image into kind
+        run: kind load image-archive image.tar --name ci
+
+      - name: helm install
+        run: |
+          helm upgrade --install fraud-detection "$CHART_DIR" -n fraud --create-namespace \
+            --set image.repository=fraud-detection --set image.tag=ci --set image.pullPolicy=Never \
+            --wait --timeout 3m
+          kubectl -n fraud get deploy,po,svc,hpa,pdb,networkpolicy
+
+      - name: helm test (in-cluster call through the NetworkPolicy)
+        run: helm test fraud-detection -n fraud --logs
+
+      - name: Smoke test via port-forward
+        run: |
+          kubectl -n fraud port-forward svc/fraud-detection 8080:8080 >/dev/null 2>&1 &
+          for _ in $(seq 1 20); do curl -fs localhost:8080/healthz >/dev/null && break; sleep 1; done
+          curl -fsS localhost:8080/healthz
+          curl -fsS -X POST localhost:8080/v1/score -H 'Content-Type: application/json' \
+            -d '{"amount": 45, "country": "CA"}' | tee /dev/stderr | grep -q '"decision": "approve"'
+          curl -fsS localhost:8080/metrics | grep -q 'fraud_decisions_total{decision="approve"}'
+
+      - name: Zero-downtime rolling update
+        # An in-cluster client hammers the Service while every pod is replaced.
+        # Readiness probes, preStop drain and maxUnavailable=0 should mean no
+        # failed requests; the step fails if any request fails.
+        run: |
+          # shellcheck disable=SC2016 # the loop is expanded by sh inside the pod
+          kubectl -n fraud run prober --image=curlimages/curl:8.10.1 --restart=Never \
+            --labels=fraud-detection-client=true --command -- sh -c '
+              ok=0; fail=0
+              for i in $(seq 1 250); do
+                if curl -fs -m 2 http://fraud-detection:8080/readyz >/dev/null; then ok=$((ok+1)); else fail=$((fail+1)); fi
+                sleep 0.2
+              done
+              echo "ok=$ok fail=$fail"; [ "$fail" -eq 0 ]'
+          kubectl -n fraud wait --for=condition=Ready pod/prober --timeout=60s
+          helm upgrade fraud-detection "$CHART_DIR" -n fraud --reuse-values \
+            --set-string podAnnotations.rollout="$GITHUB_RUN_ID" --wait --timeout 3m
+          kubectl -n fraud wait --for=jsonpath='{.status.phase}'=Succeeded pod/prober --timeout=120s
+          kubectl -n fraud logs prober
+
+      - name: Diagnostics
+        if: failure()
+        run: |
+          kubectl -n fraud describe pods || true
+          kubectl -n fraud logs -l app.kubernetes.io/name=fraud-detection --tail=100 || true
+          kubectl get events -A --sort-by=.lastTimestamp | tail -50 || true
+
+  publish:
+    name: Publish image & chart to GHCR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [kind, observability]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push (SBOM + provenance)
+        uses: docker/build-push-action@v6
+        with:
+          context: ${{ env.APP_DIR }}
+          push: true
+          build-args: APP_VERSION=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Push Helm chart (OCI)
+        env:
+          GH_ACTOR: ${{ github.actor }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$GH_TOKEN" | helm registry login ghcr.io -u "$GH_ACTOR" --password-stdin
+          helm package "$CHART_DIR" -d dist
+          helm push dist/*.tgz "$CHART_REPO"
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published"
+            echo "- Image: \`$IMAGE:$GITHUB_SHA\`"
+            echo "- Chart: \`$CHART_REPO/fraud-detection\`"
+            echo
+            echo "Deploy to AKS: Actions > **Deploy app (AKS)** > image tag \`$GITHUB_SHA\`"
+          } >> "$GITHUB_STEP_SUMMARY"

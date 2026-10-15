@@ -13,7 +13,9 @@ metadata:
     {{- toYaml .Values.networkPolicy.clientPodLabel | nindent 4 }}
   annotations:
     "helm.sh/hook": test
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+    # Keep the pod after success so `helm test --logs` can read its output;
+    # it is replaced on the next test run.
+    "helm.sh/hook-delete-policy": before-hook-creation
     checkov.io/skip1: CKV_K8S_8=One-shot helm test pod; no long-running process to probe
     checkov.io/skip2: CKV_K8S_9=One-shot helm test pod; no long-running process to probe
     checkov.io/skip3: CKV2_K8S_6=Short-lived client pod; it is the caller the API NetworkPolicy admits
